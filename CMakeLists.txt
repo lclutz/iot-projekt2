@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(cpp-template)
+project(iot-projekt2)
 
-add_subdirectory(src)
+add_subdirectory(fake-dht)
+add_subdirectory(fake-led)
+add_subdirectory(ingress)

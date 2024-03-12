@@ -1,7 +1,15 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-  "name": "cpp-template",
+  "name": "iot-projekt2",
   "version": "0.1.0",
-  "dependencies": [],
+  "dependencies": [
+    {
+      "name": "influxdb-cxx",
+      "features": [
+        "boost"
+      ]
+    },
+    "paho-mqttpp3"
+  ],
   "builtin-baseline": "7d34ab302a0d26fcbf2fead87e969691cf2bb12c"
 }

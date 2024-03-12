@@ -1,0 +1,29 @@
+---
+version: "3.4"
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.18
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - 1883:1883
+      - 9001:9001
+    volumes:
+      - ./misc/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  influxdb:
+    image: influxdb:1.8
+    container_name: influxdb
+    restart: unless-stopped
+    ports:
+      - 8086:8086
+
+  grafana:
+    image: grafana/grafana-oss:10.4.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - 3000:3000
+    depends_on:
+      - influxdb
