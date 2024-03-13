@@ -12,10 +12,18 @@ services:
     volumes:
       - ./misc/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
 
+  nodered:
+    image: nodered/node-red
+    container_name: nodered
+    ports:
+      - 1880:1880
+
   influxdb:
     image: influxdb:1.8
     container_name: influxdb
     restart: unless-stopped
+    environment:
+      - TZ=Europe/Berlin
     ports:
       - 8086:8086
 
