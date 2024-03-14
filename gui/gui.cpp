@@ -26,9 +26,9 @@ static int SDL(int errorCode)
 
 // Wrapper for SDL functions returning pointers to SDL data types. Will log
 // errors and crash the program in case of an error.
-template <typename T> T *SDL(T const *const ptr)
+template <typename T> T *SDL(T *const ptr)
 {
-    if (nullptr != ptr)
+    if (nullptr == ptr)
     {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL Error: %s",
                      SDL_GetError());
@@ -51,14 +51,15 @@ int main(int, char **)
     static constexpr int w = 800;
     static constexpr int h = 600;
     static constexpr Uint32 windowFlags = SDL_WINDOW_ALLOW_HIGHDPI;
-    auto window = SDL_CreateWindow(title.c_str(), SDL_WINDOWPOS_UNDEFINED,
-                                   SDL_WINDOWPOS_UNDEFINED, w, h, windowFlags);
+    auto window =
+        SDL(SDL_CreateWindow(title.c_str(), SDL_WINDOWPOS_UNDEFINED,
+                             SDL_WINDOWPOS_UNDEFINED, w, h, windowFlags));
     defer(SDL_DestroyWindow(window));
 
     static constexpr Uint32 renderFlags =
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC;
     static constexpr int deviceIndex = -1;
-    auto renderer = SDL_CreateRenderer(window, deviceIndex, renderFlags);
+    auto renderer = SDL(SDL_CreateRenderer(window, deviceIndex, renderFlags));
     defer(SDL_DestroyRenderer(renderer));
 
     IMGUI_CHECKVERSION();
@@ -96,15 +97,17 @@ int main(int, char **)
 
         // ImGui::Begin(
         //     "Another Window",
-        //     &show_another_window); // Pass a pointer to our bool variable (the
+        //     &show_another_window); // Pass a pointer to our bool variable
+        //     (the
         //                            // window will have a closing button that
         //                            // will clear the bool when clicked)
         // ImGui::End();
 
         ImGui::Render();
-        SDL_RenderSetScale(renderer, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
-        SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0x00);
-        SDL_RenderClear(renderer);
+        SDL(SDL_RenderSetScale(renderer, io.DisplayFramebufferScale.x,
+                               io.DisplayFramebufferScale.y));
+        SDL(SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0x00));
+        SDL(SDL_RenderClear(renderer));
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());
         SDL_RenderPresent(renderer);
     }
