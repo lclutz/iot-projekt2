@@ -5,7 +5,7 @@ name = "pypi"
 
 [packages]
 paho-mqtt = "1.6.1"
-influxdb = "*"
+influxdb = "5.3.1"
 
 [dev-packages]
 
