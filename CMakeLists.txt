@@ -4,4 +4,5 @@ project(iot-projekt2)
 
 add_subdirectory(fake-dht)
 add_subdirectory(fake-led)
+add_subdirectory(gui)
 add_subdirectory(ingress)

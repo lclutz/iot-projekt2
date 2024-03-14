@@ -9,7 +9,15 @@
         "boost"
       ]
     },
-    "paho-mqttpp3"
+    "paho-mqttpp3",
+    "sdl2",
+    {
+      "name": "imgui",
+      "features": [
+        "sdl2-binding", "sdl2-renderer-binding"
+      ]
+    },
+    "implot"
   ],
   "builtin-baseline": "7d34ab302a0d26fcbf2fead87e969691cf2bb12c"
 }
