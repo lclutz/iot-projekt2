@@ -8,14 +8,16 @@ set(SOURCES
 
 set(HEADERS
   defer.h
+  helpers.h
+  result.h
 )
 
 add_executable(${PROJECT_NAME} WIN32 ${SOURCES} ${HEADERS})
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
 
-find_package(PahoMqttCpp CONFIG REQUIRED)
-target_link_libraries(${PROJECT_NAME} PRIVATE PahoMqttCpp::paho-mqttpp3)
+find_package(InfluxDB CONFIG REQUIRED)
+target_link_libraries(${PROJECT_NAME} PRIVATE InfluxData::InfluxDB)
 
 find_package(SDL2 CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE SDL2::SDL2main SDL2::SDL2)

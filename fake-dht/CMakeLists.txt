@@ -10,6 +10,9 @@ add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_17)
 
+find_package(date CONFIG REQUIRED)
+target_link_libraries(${PROJECT_NAME} PRIVATE date::date date::date-tz)
+
 find_package(PahoMqttCpp CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE PahoMqttCpp::paho-mqttpp3)
 

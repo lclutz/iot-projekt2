@@ -1,194 +1,240 @@
 #include <chrono>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <string>
 
-#include <mqtt/async_client.h>
+#include "defer.h"
 
-static constexpr int QOS = 2;
+#include <date/date.h>
 
-static auto const TIMEOUT = std::chrono::seconds{10};
+#include <mqtt/client.h>
 
-static constexpr int SESSION_EXPIRY_INTERVAL = 60; // in seconds
-static constexpr int MESSAGE_EXPIRY_INTERVAL = 20; // in seconds
+static constexpr auto Qos = int{1};
+static auto const ClientId = std::string{"fake-dht"};
+static auto const Topic = std::string{"haus/temperatur"};
 
-class SubscriptionCallback : public virtual mqtt::iaction_listener
+// Prints usage string
+static void Usage(std::string const &executable)
 {
-    void on_failure(mqtt::token const &token) override
-    {
-        auto msg = std::stringstream{};
-        msg << "Failure";
-
-        auto const topic = token.get_topics();
-        if (nullptr != topic && !topic->empty())
-        {
-            msg << " for topic " << (*topic)[0];
-        }
-
-        std::cout << msg.str() << std::endl;
-    }
-
-    void on_success(mqtt::token const &token) override
-    {
-        auto msg = std::stringstream{};
-        msg << "Success";
-
-        auto const topic = token.get_topics();
-        if (nullptr != topic && !topic->empty())
-        {
-            msg << " for topic " << (*topic)[0];
-        }
-
-        std::cout << msg.str() << std::endl;
-    }
-};
-
-class MqttClientCallback : public virtual mqtt::callback,
-                           public virtual mqtt::iaction_listener
-{
-  public:
-    explicit MqttClientCallback(mqtt::async_client &client)
-        : client(client)
-    {
-    }
-
-  private:
-    mqtt::async_client &client;
-    SubscriptionCallback subscriptionCallback;
-
-    void on_failure(mqtt::token const &) override
-    {
-    }
-
-    void on_success(mqtt::token const &) override
-    {
-    }
-
-    void connection_lost(std::string const &cause) override
-    {
-        auto msg = std::stringstream{};
-        msg << "Connection lost: " << cause;
-        std::cout << msg.str() << std::endl;
-    }
-
-    void delivery_complete(mqtt::delivery_token_ptr token) override
-    {
-        auto msg = std::stringstream{};
-        msg << "Reveiced ACK for message id: "
-            << (nullptr != token ? token->get_message_id() : -1)
-            << " (only for QOS > 0)";
-        std::cout << msg.str() << std::endl;
-    }
-
-    void message_arrived(mqtt::const_message_ptr msg) override
-    {
-        auto stream = std::stringstream{};
-        stream << "Message arrived"
-               << "\n\tTopic:   " << msg->get_topic()
-               << "\n\tPayload: " << msg->to_string();
-        std::cout << stream.str() << std::endl;
-    }
-
-    void connected(std::string const &) override
-    {
-        auto msg = std::stringstream{};
-        msg << "Connected: \n"
-            << "Sending welcomemessage with QOS=" << QOS
-            << " on topic 'hello'...";
-        std::cout << msg.str() << std::endl;
-
-        auto pubProps = mqtt::properties{};
-        pubProps.add(
-            {mqtt::property::MESSAGE_EXPIRY_INTERVAL, MESSAGE_EXPIRY_INTERVAL});
-
-        auto const helloMsg = mqtt::message::create(
-            "hello", "Hello from paho C++ client v5", QOS, true, pubProps);
-
-        auto token = client.publish(helloMsg);
-        if (mqtt::SUCCESS == token->get_return_code())
-        {
-            std::cout << "\t...OK, sent message with id: "
-                      << token->get_message_id() << std::endl;
-        }
-        else
-        {
-            std::cout << "\t...NOK, message not sent." << std::endl;
-        }
-
-        std::cout << "Subscribing to topic 'hello'..." << std::endl;
-        auto subToken =
-            client.subscribe("hello", QOS, nullptr, subscriptionCallback);
-        subToken->wait_for(1000); // just slow down for demo
-        if (mqtt::SUCCESS == subToken->get_return_code())
-        {
-            std::cout << "\tOK, subscribed." << std::endl;
-        }
-        else
-        {
-            std::cout << "\tNOK, not subscribed." << std::endl;
-        }
-    }
-};
+    std::cerr << "Usage:\n\n"
+              << executable << ": "
+              << "--mqtt <MQTT Broker URL>"
+              << "\n"
+              << std::endl;
+}
 
 struct Config
 {
-    std::string serverAddress;
+    std::string mqttUrl;
     std::string clientId;
-    std::string username;
-    std::string password;
+    std::string topic;
+    int qos;
+
+    friend std::ostream &operator<<(std::ostream &os, Config const &config)
+    {
+        os << "{mqttUrl: " << config.mqttUrl << ", clientId: " << config.clientId << "}";
+        return os;
+    }
 };
 
-int main()
+// Turns command line arguments into a Config for the rest of the program to
+// consume
+static Config ParseConfig(int const argc, char *argv[])
 {
-    auto const config = Config{
-        "localhost:1883",
-        "cpp-mqtt",
-        "",
-        "",
-    };
+    using namespace std::string_literals;
 
-    auto client = mqtt::async_client{config.serverAddress, config.clientId,
-                                     mqtt::create_options{MQTTVERSION_5}};
-    auto clientCallback = MqttClientCallback{client};
-    client.set_callback(clientCallback);
+    auto config = Config{};
+    config.clientId = ClientId;
+    config.topic = Topic;
+    config.qos = Qos;
+
+    for (int i = 1; i < argc; ++i)
+    {
+        auto const arg = std::string{argv[i]};
+
+        if ("--mqtt"s == arg && i + 1 < argc)
+        {
+            config.mqttUrl = argv[++i];
+        }
+    }
+
+    return config;
+}
+
+// Check if all the neccessary fields were filled out
+static bool ValidateConfig(Config const &config)
+{
+    return !config.mqttUrl.empty();
+}
+
+class MemoryPersistence : virtual public mqtt::iclient_persistence
+{
+  public:
+    // "Open" the store
+    void open(std::string const &, std::string const &) override
+    {
+        isOpen = true;
+    }
+
+    // Close the persistent store that was previously opened.
+    void close() override
+    {
+        isOpen = false;
+    }
+
+    // Clears persistence, so that it no longer contains any persisted data.
+    void clear() override
+    {
+        store.clear();
+    }
+
+    // Returns whether or not data is persisted using the specified key.
+    bool contains_key(std::string const &key) override
+    {
+        return store.find(key) != store.end();
+    }
+
+    // Returns the keys in this persistent data store.
+    mqtt::string_collection keys() const override
+    {
+        mqtt::string_collection ks;
+        for (auto const &[k, _] : store)
+        {
+            ks.push_back(k);
+        }
+        return ks;
+    }
+
+    // Puts the specified data into the persistent store.
+    void put(std::string const &key, std::vector<mqtt::string_view> const &bufs) override
+    {
+        std::stringstream stream;
+        for (const auto &b : bufs)
+        {
+            stream << b;
+        }
+        store[key] = stream.str();
+    }
+
+    // Gets the specified data out of the persistent store.
+    std::string get(std::string const &key) const override
+    {
+        if (auto p = store.find(key); p != store.end())
+        {
+            return p->second;
+        }
+
+        throw mqtt::persistence_exception();
+    }
+
+    // Remove the data for the specified key.
+    void remove(std::string const &key) override
+    {
+        if (auto p = store.find(key); p != store.end())
+        {
+            store.erase(p);
+        }
+
+        throw mqtt::persistence_exception();
+    }
+
+  private:
+    bool isOpen = false;
+    std::map<std::string, std::string> store;
+};
+
+class UserCallback : public virtual mqtt::callback
+{
+    void connection_lost(const std::string &cause) override
+    {
+        std::cout << "\nConnection lost" << std::endl;
+        if (!cause.empty())
+        {
+            std::cout << "\tcause: " << cause << std::endl;
+        }
+    }
+
+    void delivery_complete(mqtt::delivery_token_ptr) override
+    {
+    }
+};
+
+static std::string GetRandomPayload()
+{
+    static constexpr auto temperature = 18.0f;
+    static constexpr auto deltaTemperature = 3.0f;
+    static constexpr auto humidity = 50.0f;
+    static constexpr auto deltaHumidity = 5.0f;
+
+    static auto dev = std::random_device{};
+    static auto rng = std::default_random_engine{dev()};
+    static auto dist = std::uniform_real<float>(-1.0f, 1.0f);
+
+    auto timestamp = std::chrono::system_clock::now();
+
+    auto temp = temperature + dist(rng) * deltaTemperature;
+    auto humi = humidity + dist(rng) * deltaHumidity;
+
+    std::stringstream stream;
+    stream << "{"
+           << "\"timestamp\":\"" << date::format("%F %T %Z", date::floor<std::chrono::milliseconds>(timestamp)) << "\","
+           << "\"temperature\":" << temp << ","
+           << "\"humidity\":" << humi
+           << "}";
+
+    return stream.str();
+}
+
+int main(int argc, char **argv)
+{
+    auto const config = ParseConfig(argc, argv);
+    if (!ValidateConfig(config))
+    {
+        Usage(argv[0]);
+        return 1;
+    }
+
+    std::cout << "Configuration: " << config << std::endl;
+
+    std::cout << "Initializing..." << std::endl;
+    auto persist = MemoryPersistence{};
+    auto client = mqtt::client{config.mqttUrl, config.clientId, &persist};
+
+    auto userCallback = UserCallback{};
+    client.set_callback(userCallback);
+
+    auto connOpts = mqtt::connect_options{};
+    connOpts.set_keep_alive_interval(20);
+    connOpts.set_clean_session(true);
+    std::cout << "Initialized." << std::endl;
+
     try
     {
         std::cout << "Connecting..." << std::endl;
+        client.connect(connOpts);
+        defer(client.disconnect());
+        std::cout << "Connected." << std::endl;
 
-        auto properties = mqtt::properties{};
-        properties.add(
-            {mqtt::property::SESSION_EXPIRY_INTERVAL, SESSION_EXPIRY_INTERVAL});
-
-        auto const connOpts = mqtt::connect_options_builder{}
-                                  .properties(properties)
-                                  .user_name(config.username)
-                                  .password(config.password)
-                                  .mqtt_version(MQTTVERSION_5)
-                                  .connect_timeout(TIMEOUT)
-                                  .clean_start(true)
-                                  .finalize();
-
-        auto const connOk = client.connect(connOpts);
-        std::cout << "Waiting for connections..." << std::endl;
-
-        connOk->wait_for(TIMEOUT);
-        if (!client.is_connected())
+        std::cout << "Sendingn messages..." << std::endl;
+        while (true)
         {
-            std::cerr << "Timeout expired." << std::endl;
-            return 1;
+            auto const payload = GetRandomPayload();
+            auto pubmsg = mqtt::make_message(config.topic, payload);
+            pubmsg->set_qos(config.qos);
+            client.publish(pubmsg);
+            std::cout << "Message sent to topic " << config.topic << ": " << payload << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds{1});
         }
-
-        // Block until the user quits
-        while (std::tolower(std::cin.get()) != 'q')
-            ;
-
-        std::cout << "Disconnecting..." << std::endl;
-        client.disconnect()->wait();
-        std::cout << "Disconnected." << std::endl;
+    }
+    catch (mqtt::persistence_exception const &e)
+    {
+        std::cerr << "Persistence Error: " << e.what() << std::endl;
+        return 1;
     }
     catch (mqtt::exception const &e)
     {
-        std::cerr << e.what() << std::endl;
+        std::cerr << "MQTT Error: " << e.what() << std::endl;
         return 1;
     }
 

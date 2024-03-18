@@ -3,6 +3,7 @@
   "name": "iot-projekt2",
   "version": "0.1.0",
   "dependencies": [
+    "date",
     {
       "name": "influxdb-cxx",
       "features": [
