@@ -7,9 +7,7 @@ set(SOURCES
 )
 
 set(HEADERS
-  defer.h
   helpers.h
-  result.h
 )
 
 add_executable(${PROJECT_NAME} WIN32 ${SOURCES} ${HEADERS})

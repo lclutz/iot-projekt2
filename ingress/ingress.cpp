@@ -138,6 +138,17 @@ int main(int argc, char *argv[])
         .clean_session(false)
         .finalize();
 
+    auto db = influxdb::InfluxDBFactory::Get(config.influxDbUrl);
+    try
+    {
+        db->createDatabaseIfNotExists();
+    }
+    catch (influxdb::InfluxDBException const &e)
+    {
+        std::cerr << "Failed to connect to InfluxDB: " << e.what() << std::endl;
+        return 1;
+    }
+
     try
     {
         std::cout << "Connecting to MQTT server..." << std::endl;
@@ -165,6 +176,12 @@ int main(int argc, char *argv[])
                         auto const &[temp, humi] = std::get<std::pair<Measurement, Measurement>>(parseResult);
                         std::cout << "Temperature: " << temp << std::endl;
                         std::cout << "Humidity: " << humi << std::endl;
+
+                        auto tempPoint = influxdb::Point{"temperature"}.setTimestamp(temp.timestamp).addField("value", temp.value);
+                        db->write(std::move(tempPoint));
+
+                        auto humiPoint = influxdb::Point{"humidity"}.setTimestamp(humi.timestamp).addField("value", humi.value);
+                        db->write(std::move(humiPoint));
                     }
                     else
                     {
