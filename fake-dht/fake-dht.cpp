@@ -1,18 +1,17 @@
 #include <chrono>
 #include <iostream>
-#include <random>
 #include <sstream>
 #include <string>
 
+#include "constants.h"
 #include "defer.h"
+#include "random_number.h"
 
 #include <date/date.h>
 
 #include <mqtt/client.h>
 
-static constexpr auto Qos = int{1};
 static auto const ClientId = std::string{"fake-dht"};
-static auto const Topic = std::string{"haus/temperatur"};
 
 // Prints usage string
 static void Usage(std::string const &executable)
@@ -27,13 +26,19 @@ static void Usage(std::string const &executable)
 struct Config
 {
     std::string mqttUrl;
-    std::string clientId;
-    std::string topic;
-    int qos;
+    std::string clientId = ClientId;
+    std::string topic = MqttTopic;
+    int qos = MqttQos;
 
     friend std::ostream &operator<<(std::ostream &os, Config const &config)
     {
-        os << "{mqttUrl: " << config.mqttUrl << ", clientId: " << config.clientId << "}";
+        os << "{"
+         << "mqttUrl:" << config.mqttUrl << ","
+         << "clientId:" << config.clientId << ","
+         << "topic:" << config.topic << ","
+         << "qos:" << config.qos << ","
+         << "}";
+
         return os;
     }
 };
@@ -45,9 +50,6 @@ static Config ParseConfig(int const argc, char *argv[])
     using namespace std::string_literals;
 
     auto config = Config{};
-    config.clientId = ClientId;
-    config.topic = Topic;
-    config.qos = Qos;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -67,6 +69,27 @@ static bool ValidateConfig(Config const &config)
 {
     return !config.mqttUrl.empty();
 }
+
+struct SensorData
+{
+    std::chrono::time_point<std::chrono::system_clock> const timestamp;
+    float temperature;
+    float humidity;
+
+    SensorData() : timestamp(std::chrono::system_clock::now())
+    {
+    }
+
+    friend std::ostream &operator<<(std::ostream &os, SensorData const &data)
+    {
+        os << "{"
+            << "timestamp:" << date::format(TimeStampFormat, data.timestamp) << ","
+            << "temperature:" << data.temperature << ","
+            << "humidity:" << data.humidity  << ","
+            << "}";
+        return os;
+    }
+};
 
 class MemoryPersistence : virtual public mqtt::iclient_persistence
 {
@@ -160,29 +183,30 @@ class UserCallback : public virtual mqtt::callback
     }
 };
 
-static std::string GetRandomPayload()
+static SensorData GetRandomSensorData()
 {
     static constexpr auto temperature = 18.0f;
     static constexpr auto deltaTemperature = 3.0f;
     static constexpr auto humidity = 50.0f;
     static constexpr auto deltaHumidity = 5.0f;
 
-    static auto dev = std::random_device{};
-    static auto rng = std::default_random_engine{dev()};
-    static auto dist = std::uniform_real<float>(-1.0f, 1.0f);
+    auto data = SensorData{};
+    data.temperature = temperature + GetRandomNumber(-1.0f, 1.0f) * deltaTemperature;
+    data.humidity = humidity + GetRandomNumber(-1.0f, 1.0f) * deltaHumidity;
 
-    auto timestamp = std::chrono::system_clock::now();
+    std::cout << "Read sensor data: " << data << std::endl;
 
-    auto temp = temperature + dist(rng) * deltaTemperature;
-    auto humi = humidity + dist(rng) * deltaHumidity;
+    return data;
+}
 
+static std::string SensorDataToJson(SensorData const &data)
+{
     std::stringstream stream;
     stream << "{"
-           << "\"timestamp\":\"" << date::format("%F %T %Z", date::floor<std::chrono::milliseconds>(timestamp)) << "\","
-           << "\"temperature\":" << temp << ","
-           << "\"humidity\":" << humi
+           << "\"timestamp\":\"" << date::format(TimeStampFormat, data.timestamp) << "\","
+           << "\"temperature\":" << data.temperature << ","
+           << "\"humidity\":" << data.humidity
            << "}";
-
     return stream.str();
 }
 
@@ -199,14 +223,18 @@ int main(int argc, char **argv)
 
     std::cout << "Initializing..." << std::endl;
     auto persist = MemoryPersistence{};
-    auto client = mqtt::client{config.mqttUrl, config.clientId, &persist};
+    auto client = mqtt::client{config.mqttUrl, config.clientId,
+        mqtt::create_options{MqttVersion}, &persist};
 
     auto userCallback = UserCallback{};
     client.set_callback(userCallback);
 
-    auto connOpts = mqtt::connect_options{};
-    connOpts.set_keep_alive_interval(20);
-    connOpts.set_clean_session(true);
+    auto const connOpts = mqtt::connect_options_builder()
+        .mqtt_version(MqttVersion)
+        .automatic_reconnect(std::chrono::seconds{2}, std::chrono::seconds{30})
+        .clean_session(false)
+        .finalize();
+
     std::cout << "Initialized." << std::endl;
 
     try
@@ -219,7 +247,8 @@ int main(int argc, char **argv)
         std::cout << "Sendingn messages..." << std::endl;
         while (true)
         {
-            auto const payload = GetRandomPayload();
+            auto const data = GetRandomSensorData();
+            auto const payload = SensorDataToJson(data);
             auto pubmsg = mqtt::make_message(config.topic, payload);
             pubmsg->set_qos(config.qos);
             client.publish(pubmsg);
