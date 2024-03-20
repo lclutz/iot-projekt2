@@ -9,8 +9,8 @@
 // seconds since epoch
 template <typename T> static float TimePointToSeconds(std::chrono::time_point<T> const &tp)
 {
-    auto const milliSeconds = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();
-    return milliSeconds / 1000.0f;
+    auto const ms = std::chrono::duration_cast<std::chrono::milliseconds>(tp - std::chrono::system_clock::time_point{});
+    return ms.count() / 1000.0f;
 }
 
 // Helper for logging errors

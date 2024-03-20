@@ -1,13 +1,16 @@
 #include <chrono>
 #include <future>
-#include <random>
+#include <mutex>
+#include <sstream>
 #include <string>
-#include <thread>
 #include <vector>
 
+#include "constants.h"
 #include "defer.h"
 #include "helpers.h"
 #include "result.h"
+
+#include <date/date.h>
 
 // Library for talking to InfluxDB
 #include <InfluxDBFactory.h>
@@ -54,34 +57,6 @@ struct Measurement
     float value;
 };
 
-// Produces random number between 0 and 1
-static float GetRandomNumber()
-{
-    static auto dev = std::random_device{};
-    static auto rng = std::default_random_engine{dev()};
-    static auto dist = std::uniform_real<float>{0.0f, 1.0f};
-
-    return dist(rng);
-}
-
-static TimeStamp GetTimeStamp()
-{
-    using namespace std::chrono;
-    static auto const t0 = TimeStamp::clock::now();
-    static auto const highResT0 = high_resolution_clock::now();
-    auto const deltaTime = high_resolution_clock::now() - highResT0;
-    auto const ms = duration_cast<seconds>(deltaTime);
-    return t0 + ms;
-}
-
-static Result<std::vector<Measurement>> GetRandomMeasurements()
-{
-    std::this_thread::sleep_for(std::chrono::seconds{1});
-    auto const timeStamp = GetTimeStamp();
-    LogI("TimeStamp in Seconds: %f", TimePointToSeconds(timeStamp));
-    return std::vector<Measurement>{{timeStamp, GetRandomNumber()}};
-}
-
 struct TimeSeries
 {
     std::vector<float> values;
@@ -90,7 +65,9 @@ struct TimeSeries
     void Insert(Measurement const &measurement)
     {
         values.emplace_back(measurement.value);
-        timeStamps.emplace_back(TimePointToSeconds(measurement.timeStamp));
+        auto const seconds = TimePointToSeconds(measurement.timeStamp);
+        LogI("Seconds: %f", seconds);
+        timeStamps.emplace_back(seconds);
     }
 
     void Insert(std::vector<Measurement> const &measurements)
@@ -102,25 +79,65 @@ struct TimeSeries
     }
 };
 
-struct DbConnectionState
+struct DbConnection
 {
+    std::mutex m;
     bool showDialog = true;
-    std::string url{"http://localhost:8086?db=temperature_db"};
+    std::string url{"http://localhost:8086?db=sensor_data"};
     std::string errorMsg;
     std::unique_ptr<influxdb::InfluxDB> db;
+
+    std::vector<influxdb::Point> query(std::string const &query)
+    {
+        if (nullptr != db)
+        {
+            return db->query(query);
+        }
+        return {};
+    }
 };
 
 struct State
 {
     TimeSeries temperatureSeries;
     std::future<Result<std::vector<Measurement>>> temperatureFuture;
+    std::chrono::system_clock::time_point temperatureCursor = std::chrono::system_clock::now();
 
     TimeSeries humiditySeries;
     std::future<Result<std::vector<Measurement>>> humidityFuture;
+    std::chrono::system_clock::time_point humidityCursor = std::chrono::system_clock::now();
 
-    DbConnectionState connection;
+    DbConnection connection;
     bool fitToData = true;
 };
+
+static Result<std::vector<Measurement>> GetNewMeasurements(DbConnection &db, std::chrono::system_clock::time_point const &since, std::string const &name)
+{
+    auto const lg = std::lock_guard{db.m};
+    try
+    {
+        auto newMeasurements = std::vector<Measurement>{};
+
+        auto stream = std::stringstream{};
+        stream << "select * from " << name << " where time > " << std::chrono::duration_cast<std::chrono::nanoseconds>(since.time_since_epoch()).count();
+        auto const query = stream.str();
+
+        for (auto point : db.query(query))
+        {
+            auto measurement = Measurement{};
+            measurement.timeStamp = point.getTimestamp();
+            LogI("getTimestamp(): %f", TimePointToSeconds(measurement.timeStamp));
+            measurement.value = std::stof(point.getFields().substr(6));
+            newMeasurements.emplace_back(measurement);
+        }
+
+        return newMeasurements;
+    }
+    catch (influxdb::InfluxDBException const &e)
+    {
+        return Err{e.what()};
+    }
+}
 
 // Connect to database or return an error message
 // Stupid std::variant is forcing me to use a raw pointer here...
@@ -165,8 +182,8 @@ static void DrawConnectDialog(State &state)
                 state.connection.db =
                     std::unique_ptr<influxdb::InfluxDB>(std::get<influxdb::InfluxDB *>(connectResult));
 
-                state.temperatureFuture = std::async(std::launch::async, GetRandomMeasurements);
-                state.humidityFuture = std::async(std::launch::async, GetRandomMeasurements);
+                state.temperatureFuture = std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection), std::ref(state.temperatureCursor), "temperature");
+                state.humidityFuture = std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection), std::ref(state.humidityCursor), "humidity");
 
                 state.connection.showDialog = false;
                 ImGui::CloseCurrentPopup();
@@ -250,8 +267,14 @@ static void UpdateData(State &state)
         auto const result = state.temperatureFuture.get();
         if (std::holds_alternative<std::vector<Measurement>>(result))
         {
-            state.temperatureSeries.Insert(std::get<std::vector<Measurement>>(result));
-            state.temperatureFuture = std::async(std::launch::async, GetRandomMeasurements);
+            auto const measurements = std::get<std::vector<Measurement>>(result);
+            if (!measurements.empty())
+            {
+                state.temperatureSeries.Insert(measurements);
+                state.temperatureCursor = measurements.back().timeStamp;
+            }
+            state.temperatureFuture =
+                std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection), std::ref(state.temperatureCursor), "temperature");
         }
         else
         {
@@ -264,8 +287,14 @@ static void UpdateData(State &state)
         auto const result = state.humidityFuture.get();
         if (std::holds_alternative<std::vector<Measurement>>(result))
         {
-            state.humiditySeries.Insert(std::get<std::vector<Measurement>>(result));
-            state.humidityFuture = std::async(std::launch::async, GetRandomMeasurements);
+            auto const measurements = std::get<std::vector<Measurement>>(result);
+            if (!measurements.empty())
+            {
+                state.humiditySeries.Insert(measurements);
+                state.humidityCursor = measurements.back().timeStamp;
+            }
+            state.humidityFuture =
+                std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection), std::ref(state.humidityCursor), "humidity");
         }
         else
         {
