@@ -36,12 +36,10 @@ using DataBase = std::unique_ptr<influxdb::InfluxDB>;
 // Helper for defining ImGui colors as hex RGBA
 constexpr ImVec4 RGBA(uint32_t const rgba)
 {
-    return {
-        ((rgba >> (8 * 3)) & 0xFF) / 255.0f,
-        ((rgba >> (8 * 2)) & 0xFF) / 255.0f,
-        ((rgba >> (8 * 1)) & 0xFF) / 255.0f,
-        ((rgba >> (8 * 0)) & 0xFF) / 255.0f
-    };
+    return {((rgba >> (8 * 3)) & 0xFF) / 255.0f, //
+            ((rgba >> (8 * 2)) & 0xFF) / 255.0f, //
+            ((rgba >> (8 * 1)) & 0xFF) / 255.0f, //
+            ((rgba >> (8 * 0)) & 0xFF) / 255.0f};
 }
 
 static auto const Title = std::string{"Visualisierung"};
@@ -79,11 +77,32 @@ struct TimeSeries
     }
 };
 
+// Wrapper for thread safe queries to InfluxDB
+class Db
+{
+  public:
+    explicit Db(std::string const &url) : db(influxdb::InfluxDBFactory::Get(url))
+    {
+
+        db->createDatabaseIfNotExists();
+    }
+
+    std::vector<influxdb::Point> query(std::string const &q)
+    {
+        auto const lg = std::lock_guard{m};
+        return db->query(q);
+    }
+
+  private:
+    std::mutex m;
+    std::unique_ptr<influxdb::InfluxDB> db;
+};
+
 struct DbConnection
 {
     std::mutex m;
     bool showDialog = true;
-    std::string url{"http://localhost:8086?db=sensor_data"};
+    std::string url{"http://localhost:8086"};
     std::string errorMsg;
     std::unique_ptr<influxdb::InfluxDB> db;
 
@@ -111,15 +130,19 @@ struct State
     bool fitToData = true;
 };
 
-static Result<std::vector<Measurement>> GetNewMeasurements(DbConnection &db, std::chrono::system_clock::time_point const &since, std::string const &name)
+static Result<std::vector<Measurement>> GetNewMeasurements(
+    DbConnection &db, std::chrono::system_clock::time_point const &since, std::string const &name)
 {
     auto const lg = std::lock_guard{db.m};
     try
     {
         auto newMeasurements = std::vector<Measurement>{};
 
+        using namespace std::chrono;
         auto stream = std::stringstream{};
-        stream << "select * from " << name << " where time > " << std::chrono::duration_cast<std::chrono::nanoseconds>(since.time_since_epoch()).count();
+        stream << "select * from " << name << " where time > "
+               << duration_cast<nanoseconds>(since.time_since_epoch()).count();
+
         auto const query = stream.str();
 
         for (auto point : db.query(query))
@@ -174,16 +197,21 @@ static void DrawConnectDialog(State &state)
             if (std::holds_alternative<Err>(connectResult))
             {
                 state.connection.errorMsg = std::get<Err>(connectResult);
-                LogE("Failed to connect to %s: %s", state.connection.url.c_str(), state.connection.errorMsg.c_str());
+                LogE("Failed to connect to %s: %s", state.connection.url.c_str(),
+                     state.connection.errorMsg.c_str());
             }
             else
             {
                 state.connection.errorMsg.clear();
-                state.connection.db =
-                    std::unique_ptr<influxdb::InfluxDB>(std::get<influxdb::InfluxDB *>(connectResult));
+                state.connection.db = std::unique_ptr<influxdb::InfluxDB>(
+                    std::get<influxdb::InfluxDB *>(connectResult));
 
-                state.temperatureFuture = std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection), std::ref(state.temperatureCursor), "temperature");
-                state.humidityFuture = std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection), std::ref(state.humidityCursor), "humidity");
+                state.temperatureFuture =
+                    std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection),
+                               std::ref(state.temperatureCursor), "temperature");
+                state.humidityFuture =
+                    std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection),
+                               std::ref(state.humidityCursor), "humidity");
 
                 state.connection.showDialog = false;
                 ImGui::CloseCurrentPopup();
@@ -238,8 +266,8 @@ static void DrawMainMenuBar(State &state)
 }
 
 // Graph time series for a measurement
-static void DrawTimeSeries(std::string const &title, std::string const &yLabel, TimeSeries &timeSeries,
-                           ImVec4 const &color = IMPLOT_AUTO_COL)
+static void DrawTimeSeries(std::string const &title, std::string const &yLabel,
+                           TimeSeries &timeSeries, ImVec4 const &color = IMPLOT_AUTO_COL)
 {
     if (ImPlot::BeginPlot(title.c_str()))
     {
@@ -274,7 +302,8 @@ static void UpdateData(State &state)
                 state.temperatureCursor = measurements.back().timeStamp;
             }
             state.temperatureFuture =
-                std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection), std::ref(state.temperatureCursor), "temperature");
+                std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection),
+                           std::ref(state.temperatureCursor), "temperature");
         }
         else
         {
@@ -294,7 +323,8 @@ static void UpdateData(State &state)
                 state.humidityCursor = measurements.back().timeStamp;
             }
             state.humidityFuture =
-                std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection), std::ref(state.humidityCursor), "humidity");
+                std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection),
+                           std::ref(state.humidityCursor), "humidity");
         }
         else
         {
@@ -323,7 +353,8 @@ static void RenderFrame(State &state)
             {
                 ImPlot::SetNextAxesToFit();
             }
-            DrawTimeSeries("Temperature", "Temperature in °C", state.temperatureSeries, TemperatureColor);
+            DrawTimeSeries("Temperature", "Temperature in °C", state.temperatureSeries,
+                           TemperatureColor);
 
             if (state.fitToData)
             {
@@ -349,8 +380,8 @@ int main(int, char **)
 #endif
 
     static constexpr Uint32 windowFlags = SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE;
-    auto window = SDL(
-        SDL_CreateWindow(Title.c_str(), SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, Width, Height, windowFlags));
+    auto window = SDL(SDL_CreateWindow(Title.c_str(), SDL_WINDOWPOS_UNDEFINED,
+                                       SDL_WINDOWPOS_UNDEFINED, Width, Height, windowFlags));
     defer(SDL_DestroyWindow(window));
 
     static constexpr Uint32 renderFlags = SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC;
@@ -406,7 +437,8 @@ int main(int, char **)
         UpdateData(state);
         RenderFrame(state);
         ImGui::Render();
-        SDL(SDL_RenderSetScale(renderer, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y));
+        SDL(SDL_RenderSetScale(renderer, io.DisplayFramebufferScale.x,
+                               io.DisplayFramebufferScale.y));
         SDL(SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0x00));
         SDL(SDL_RenderClear(renderer));
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());

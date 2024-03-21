@@ -31,5 +31,5 @@ if [ -z "$(grep "$VCPKGEXPORT" $PROFILEFILE)" ]; then
     echo "         vcpkg might not work as intended if you don't"
 fi
 
-echo "done."
+echo "Done."
 cd "$CALLING_FROM"

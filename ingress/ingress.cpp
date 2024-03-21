@@ -4,8 +4,8 @@
 #include "constants.h"
 #include "result.h"
 
-#include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 
 #include <date/date.h>
 
@@ -18,11 +18,12 @@ static auto const ClientId = std::string{"ingress"};
 // Prints usage string
 static void Usage(std::string const &executable)
 {
-    std::cerr << "Usage:\n\n"
-              << executable << ": "
-              << "--influx <InfluxDB URL> "
-              << "--mqtt <MQTT Broker URL>"
-              << "\n" << std::endl;
+    std::cerr << "Usage:\n\n"               //
+              << executable << ": "         //
+              << "--influx <InfluxDB URL> " //
+              << "--mqtt <MQTT Broker URL>" //
+              << "\n"                       //
+              << std::endl;
 }
 
 struct Config
@@ -35,12 +36,12 @@ struct Config
 
     friend std::ostream &operator<<(std::ostream &os, Config const &config)
     {
-        os << "{"
-            << "influxDbUrl:" << config.influxDbUrl << ","
-            << "mqttUrl:" << config.mqttUrl << ","
-            << "clientId:" << config.clientId << ","
-            << "qos:" << config.qos << ","
-            << "}";
+        os << "{"                                         //
+           << "influxDbUrl:" << config.influxDbUrl << "," //
+           << "mqttUrl:" << config.mqttUrl << ","         //
+           << "clientId:" << config.clientId << ","       //
+           << "qos:" << config.qos << ","                 //
+           << "}";
 
         return os;
     }
@@ -75,10 +76,10 @@ static Config ParseConfig(int const argc, char *argv[])
 // Checks if the user provided all neccessary configuration options
 static bool ValidateConfig(Config const &config)
 {
-    return !config.influxDbUrl.empty()
-        && !config.mqttUrl.empty()
-        && !config.topic.empty()
-        && (0 <= config.qos && config.qos <= 3);
+    return !config.influxDbUrl.empty() //
+           && !config.mqttUrl.empty()  //
+           && !config.topic.empty()    //
+           && (0 <= config.qos && config.qos <= 3);
 }
 
 struct Measurement
@@ -88,13 +89,16 @@ struct Measurement
 
     friend std::ostream &operator<<(std::ostream &os, Measurement const &measurement)
     {
-        os << "{timestamp:" << date::format(TimeStampFormat, measurement.timestamp) << ",value:" << measurement.value << "}";
+        os << "{"                                                                         //
+           << "timestamp:" << date::format(TimeStampFormat, measurement.timestamp) << "," //
+           << "value:" << measurement.value                                               //
+           << "}";
         return os;
     }
 };
 
 // Parse out the temperature and humidity measurements from an MQTT message payload
-static Result<std::pair<Measurement, Measurement>> ParseMqttPayload(std::string const& payload)
+static Result<std::pair<Measurement, Measurement>> ParseMqttPayload(std::string const &payload)
 {
     auto ptree = boost::property_tree::ptree{};
     try
@@ -102,17 +106,16 @@ static Result<std::pair<Measurement, Measurement>> ParseMqttPayload(std::string 
         auto stream = std::stringstream{payload};
         boost::property_tree::read_json(stream, ptree);
         auto timestamp = std::chrono::system_clock::time_point{};
-        std::istringstream{ptree.get<std::string>("timestamp")}
-            >> date::parse(TimeStampFormat, timestamp);
+        std::istringstream{ptree.get<std::string>("timestamp")} >> date::parse(TimeStampFormat, timestamp);
         auto const temperature = ptree.get<float>("temperature");
         auto const humidity = ptree.get<float>("humidity");
         return std::pair{Measurement{timestamp, temperature}, Measurement{timestamp, humidity}};
     }
-    catch(boost::property_tree::json_parser_error const &e)
+    catch (boost::property_tree::json_parser_error const &e)
     {
         return Err{e.what()};
     }
-    catch(boost::property_tree::ptree_error const &e)
+    catch (boost::property_tree::ptree_error const &e)
     {
         return Err{e.what()};
     }
@@ -133,10 +136,10 @@ int main(int argc, char *argv[])
     auto client = mqtt::client{config.mqttUrl, config.clientId, mqtt::create_options{MqttVersion}};
 
     auto const connOpts = mqtt::connect_options_builder()
-        .mqtt_version(MqttVersion)
-        .automatic_reconnect(std::chrono::seconds{2}, std::chrono::seconds{30})
-        .clean_session(false)
-        .finalize();
+                              .mqtt_version(MqttVersion)
+                              .automatic_reconnect(std::chrono::seconds{2}, std::chrono::seconds{30})
+                              .clean_session(false)
+                              .finalize();
 
     auto db = influxdb::InfluxDBFactory::Get(config.influxDbUrl);
     try
@@ -162,7 +165,7 @@ int main(int argc, char *argv[])
             std::cout << "Subscribed." << std::endl;
 
             std::cout << "Waiting on messages in " << config.topic << "..." << std::endl;
-            while(true)
+            while (true)
             {
                 auto const msg = client.consume_message();
                 if (nullptr != msg)
@@ -177,10 +180,12 @@ int main(int argc, char *argv[])
                         std::cout << "Temperature: " << temp << std::endl;
                         std::cout << "Humidity: " << humi << std::endl;
 
-                        auto tempPoint = influxdb::Point{"temperature"}.setTimestamp(temp.timestamp).addField("value", temp.value);
+                        auto tempPoint =
+                            influxdb::Point{"temperature"}.setTimestamp(temp.timestamp).addField("value", temp.value);
                         db->write(std::move(tempPoint));
 
-                        auto humiPoint = influxdb::Point{"humidity"}.setTimestamp(humi.timestamp).addField("value", humi.value);
+                        auto humiPoint =
+                            influxdb::Point{"humidity"}.setTimestamp(humi.timestamp).addField("value", humi.value);
                         db->write(std::move(humiPoint));
                     }
                     else

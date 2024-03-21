@@ -16,10 +16,10 @@ static auto const ClientId = std::string{"fake-dht"};
 // Prints usage string
 static void Usage(std::string const &executable)
 {
-    std::cerr << "Usage:\n\n"
-              << executable << ": "
-              << "--mqtt <MQTT Broker URL>"
-              << "\n"
+    std::cerr << "Usage:\n\n"               //
+              << executable << ": "         //
+              << "--mqtt <MQTT Broker URL>" //
+              << "\n"                       //
               << std::endl;
 }
 
@@ -32,12 +32,12 @@ struct Config
 
     friend std::ostream &operator<<(std::ostream &os, Config const &config)
     {
-        os << "{"
-         << "mqttUrl:" << config.mqttUrl << ","
-         << "clientId:" << config.clientId << ","
-         << "topic:" << config.topic << ","
-         << "qos:" << config.qos << ","
-         << "}";
+        os << "{"                                   //
+           << "mqttUrl:" << config.mqttUrl << ","   //
+           << "clientId:" << config.clientId << "," //
+           << "topic:" << config.topic << ","       //
+           << "qos:" << config.qos << ","           //
+           << "}";
 
         return os;
     }
@@ -82,11 +82,11 @@ struct SensorData
 
     friend std::ostream &operator<<(std::ostream &os, SensorData const &data)
     {
-        os << "{"
-            << "timestamp:" << date::format(TimeStampFormat, data.timestamp) << ","
-            << "temperature:" << data.temperature << ","
-            << "humidity:" << data.humidity  << ","
-            << "}";
+        os << "{"                                                                  //
+           << "timestamp:" << date::format(TimeStampFormat, data.timestamp) << "," //
+           << "temperature:" << data.temperature << ","                            //
+           << "humidity:" << data.humidity << ","                                  //
+           << "}";
         return os;
     }
 };
@@ -202,10 +202,10 @@ static SensorData GetRandomSensorData()
 static std::string SensorDataToJson(SensorData const &data)
 {
     std::stringstream stream;
-    stream << "{"
-           << "\"timestamp\":\"" << date::format(TimeStampFormat, data.timestamp) << "\","
-           << "\"temperature\":" << data.temperature << ","
-           << "\"humidity\":" << data.humidity
+    stream << "{"                                                                          //
+           << "\"timestamp\":\"" << date::format(TimeStampFormat, data.timestamp) << "\"," //
+           << "\"temperature\":" << data.temperature << ","                                //
+           << "\"humidity\":" << data.humidity                                             //
            << "}";
     return stream.str();
 }
@@ -223,17 +223,16 @@ int main(int argc, char **argv)
 
     std::cout << "Initializing..." << std::endl;
     auto persist = MemoryPersistence{};
-    auto client = mqtt::client{config.mqttUrl, config.clientId,
-        mqtt::create_options{MqttVersion}, &persist};
+    auto client = mqtt::client{config.mqttUrl, config.clientId, mqtt::create_options{MqttVersion}, &persist};
 
     auto userCallback = UserCallback{};
     client.set_callback(userCallback);
 
     auto const connOpts = mqtt::connect_options_builder()
-        .mqtt_version(MqttVersion)
-        .automatic_reconnect(std::chrono::seconds{2}, std::chrono::seconds{30})
-        .clean_session(false)
-        .finalize();
+                              .mqtt_version(MqttVersion)
+                              .automatic_reconnect(std::chrono::seconds{2}, std::chrono::seconds{30})
+                              .clean_session(false)
+                              .finalize();
 
     std::cout << "Initialized." << std::endl;
 
