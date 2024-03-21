@@ -3,10 +3,19 @@
 #pragma once
 
 #include <string>
-#include <variant>
 
-struct Err : public std::string
+template <typename T, typename E>
+class Expected
+{
+public:
+    using value_type = T;
+    using error_type = E;
+
+    constexpr Expected();
+};
+
+class Err : public std::string
 {
 };
 
-template <typename V> using Result = std::variant<V, Err>;
+template <typename V> using Result = Expected<V, Err>;

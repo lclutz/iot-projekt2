@@ -4,8 +4,8 @@
 
 #include <mqtt/create_options.h>
 
-[[maybe_unused]] constexpr auto MqttVersion = MQTTVERSION_5;
-[[maybe_unused]] constexpr auto MqttQos = int{1};
-[[maybe_unused]] static auto const MqttTopic = std::string{"haus/temperatur"};
-[[maybe_unused]] static auto const TimeStampFormat = std::string{"%F %T %Z"};
-[[maybe_unused]] static auto const InfluxDbName = std::string{"sensor_data"};
+static constexpr auto MqttVersion = MQTTVERSION_5;
+static constexpr auto MqttQos = int{1};
+static auto const MqttTopic = std::string{"haus/dht"};
+static auto const TimeStampFormat = std::string{"%F %T %Z"};
+static auto const InfluxDbName = std::string{"sensor_data"};

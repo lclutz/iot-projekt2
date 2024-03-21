@@ -5,7 +5,7 @@
 
 #include "constants.h"
 #include "defer.h"
-#include "random_number.h"
+#include "random.h"
 
 #include <date/date.h>
 

@@ -14,19 +14,19 @@ template <typename T> static float TimePointToSeconds(std::chrono::time_point<T>
 }
 
 // Helper for logging errors
-template <typename... Params> static void LogE(const char *const fmt, Params &...params)
+template <typename... Params> static void LogE(const char *const fmt, Params &&...params)
 {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, fmt, std::forward<Params>(params)...);
 }
 
 // Helper for logging warnings
-template <typename... Params> static void LogW(const char *const fmt, Params &...params)
+template <typename... Params> static void LogW(const char *const fmt, Params &&...params)
 {
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, fmt, std::forward<Params>(params)...);
 }
 
 // Helper for logging infos
-template <typename... Params> static void LogI(const char *const fmt, Params &...params)
+template <typename... Params> static void LogI(const char *const fmt, Params &&...params)
 {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, fmt, std::forward<Params>(params)...);
 }

@@ -1,5 +1,6 @@
 #include <chrono>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -81,9 +82,12 @@ struct TimeSeries
 class Db
 {
   public:
-    explicit Db(std::string const &url) : db(influxdb::InfluxDBFactory::Get(url))
-    {
+    explicit Db() = default;
+    ~Db() = default;
 
+    Db(std::string const &url, std::string const &dbName)
+    {
+        db = influxdb::InfluxDBFactory::Get(url + "?db=" + dbName);
         db->createDatabaseIfNotExists();
     }
 
@@ -95,25 +99,7 @@ class Db
 
   private:
     std::mutex m;
-    std::unique_ptr<influxdb::InfluxDB> db;
-};
-
-struct DbConnection
-{
-    std::mutex m;
-    bool showDialog = true;
-    std::string url{"http://localhost:8086"};
-    std::string errorMsg;
-    std::unique_ptr<influxdb::InfluxDB> db;
-
-    std::vector<influxdb::Point> query(std::string const &query)
-    {
-        if (nullptr != db)
-        {
-            return db->query(query);
-        }
-        return {};
-    }
+    std::shared_ptr<influxdb::InfluxDB> db;
 };
 
 struct State
@@ -126,14 +112,16 @@ struct State
     std::future<Result<std::vector<Measurement>>> humidityFuture;
     std::chrono::system_clock::time_point humidityCursor = std::chrono::system_clock::now();
 
-    DbConnection connection;
+    Db db;
+    bool showConnDialog = true;
+    std::string influxDbUrl{"http://localhost:8086"};
+
     bool fitToData = true;
 };
 
 static Result<std::vector<Measurement>> GetNewMeasurements(
-    DbConnection &db, std::chrono::system_clock::time_point const &since, std::string const &name)
+    Db &db, std::string const &name, std::chrono::system_clock::time_point const &since)
 {
-    auto const lg = std::lock_guard{db.m};
     try
     {
         auto newMeasurements = std::vector<Measurement>{};
@@ -164,12 +152,11 @@ static Result<std::vector<Measurement>> GetNewMeasurements(
 
 // Connect to database or return an error message
 // Stupid std::variant is forcing me to use a raw pointer here...
-static Result<influxdb::InfluxDB *> Connect(std::string const &url)
+static Result<Db> Connect(std::string const &url)
 {
     try
     {
-        auto db = influxdb::InfluxDBFactory::Get(url).release();
-        db->createDatabaseIfNotExists();
+        auto const db = Db(url, InfluxDbName);
         return db;
     }
     catch (influxdb::InfluxDBException const &e)
@@ -181,39 +168,38 @@ static Result<influxdb::InfluxDB *> Connect(std::string const &url)
 // Draw modal user dialog for connecting to the InfluxDB instance
 static void DrawConnectDialog(State &state)
 {
-    if (state.connection.showDialog)
+    static auto errorMsg = std::string{};
+    if (state.showConnDialog)
     {
         ImGui::OpenPopup("Connect");
     }
 
     if (ImGui::BeginPopupModal("Connect"))
     {
-        ImGui::InputText("InfluxDB URL", &state.connection.url);
+        ImGui::InputText("InfluxDB URL", &state.influxDbUrl);
 
         if (ImGui::Button("Connect"))
         {
-            LogI("Trying to connect to '%s'", state.connection.url.c_str());
-            auto const connectResult = Connect(state.connection.url);
+            LogI("Trying to connect to '%s'", state.influxDbUrl.c_str());
+            auto const connectResult = Connect(state.influxDbUrl);
             if (std::holds_alternative<Err>(connectResult))
             {
-                state.connection.errorMsg = std::get<Err>(connectResult);
-                LogE("Failed to connect to %s: %s", state.connection.url.c_str(),
-                     state.connection.errorMsg.c_str());
+                errorMsg = std::get<Err>(connectResult);
+                LogE("Failed to connect to %s: %s", state.influxDbUrl.c_str(), errorMsg.c_str());
             }
             else
             {
-                state.connection.errorMsg.clear();
-                state.connection.db = std::unique_ptr<influxdb::InfluxDB>(
-                    std::get<influxdb::InfluxDB *>(connectResult));
+                errorMsg.clear();
+                state.db = std::get<Db>(connectResult);
 
                 state.temperatureFuture =
-                    std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection),
-                               std::ref(state.temperatureCursor), "temperature");
+                    std::async(std::launch::async, GetNewMeasurements, "temperature",
+                               std::ref(state.db), std::ref(state.temperatureCursor));
                 state.humidityFuture =
-                    std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection),
-                               std::ref(state.humidityCursor), "humidity");
+                    std::async(std::launch::async, GetNewMeasurements, "humidity",
+                               std::ref(state.db), std::ref(state.humidityCursor));
 
-                state.connection.showDialog = false;
+                state.showConnDialog = false;
                 ImGui::CloseCurrentPopup();
                 LogI("Connected");
             }
@@ -222,13 +208,13 @@ static void DrawConnectDialog(State &state)
         ImGui::SameLine();
         if (ImGui::Button("Cancel"))
         {
-            state.connection.showDialog = false;
+            state.showConnDialog = false;
             ImGui::CloseCurrentPopup();
         }
 
-        if (!state.connection.errorMsg.empty())
+        if (!errorMsg.empty())
         {
-            ImGui::TextWrapped("Failed to connect: %s", state.connection.errorMsg.c_str());
+            ImGui::TextWrapped("Failed to connect: %s", errorMsg.c_str());
         }
 
         ImGui::EndPopup();
@@ -244,7 +230,7 @@ static void DrawMainMenuBar(State &state)
         {
             if (ImGui::MenuItem("Connect to database"))
             {
-                state.connection.showDialog = true;
+                state.showConnDialog = true;
             }
 
             if (ImGui::MenuItem("Exit"))
@@ -302,8 +288,8 @@ static void UpdateData(State &state)
                 state.temperatureCursor = measurements.back().timeStamp;
             }
             state.temperatureFuture =
-                std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection),
-                           std::ref(state.temperatureCursor), "temperature");
+                std::async(std::launch::async, GetNewMeasurements, std::ref(state.db),
+                           "temperature", std::ref(state.temperatureCursor));
         }
         else
         {
@@ -323,8 +309,8 @@ static void UpdateData(State &state)
                 state.humidityCursor = measurements.back().timeStamp;
             }
             state.humidityFuture =
-                std::async(std::launch::async, GetNewMeasurements, std::ref(state.connection),
-                           std::ref(state.humidityCursor), "humidity");
+                std::async(std::launch::async, GetNewMeasurements, std::ref(state.db), "humidity",
+                           std::ref(state.humidityCursor));
         }
         else
         {
