@@ -12,12 +12,6 @@ services:
     volumes:
       - ./volumes/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
 
-  # nodered:
-  #   image: nodered/node-red
-  #   container_name: nodered
-  #   ports:
-  #     - 1880:1880
-
   influxdb:
     image: influxdb:1.8
     container_name: influxdb
@@ -26,12 +20,3 @@ services:
       - TZ=Europe/Berlin
     ports:
       - 8086:8086
-
-  # grafana:
-  #   image: grafana/grafana-oss:10.4.0
-  #   container_name: grafana
-  #   restart: unless-stopped
-  #   ports:
-  #     - 3000:3000
-  #   depends_on:
-  #     - influxdb

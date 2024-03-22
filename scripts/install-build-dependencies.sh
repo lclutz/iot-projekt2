@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 
 echo "Installing debian packages..."
 sudo apt-get update -qq
-sudo apt-get install -qq build-essential cmake git curl zip unzip tar
+sudo apt-get install -qq build-essential cmake ninja-build git curl zip unzip tar
 
 echo "Installing vcpkg..."
 VCPKGTARGET="$HOME/.vcpkg"

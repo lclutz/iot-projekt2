@@ -5,8 +5,6 @@
 
 #include <SDL.h>
 
-#include <date/date.h>
-
 // Helper for logging errors
 template <typename... Params> static void LogE(const char *const fmt, Params &&...params)
 {

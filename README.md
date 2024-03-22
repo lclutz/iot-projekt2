@@ -5,9 +5,6 @@ Karlsruhe.
 
 ## Quick-Start
 
-Um die Voraussetzungen auf einem Debian System zu installieren führen Sie das
-beigelegte Skript aus: `./scripts/install-dependencies.sh`.
-
 ```shell
 cmake --preset "default"
 cmake --build --preset "debug"   # Debug build
@@ -30,4 +27,3 @@ Die folgenden Dienste werden zur Verfügung gestellt:
 
 - Mosquitto MQTT Server unter `localhost:1883`
 - InfluxDB Datenbank unter `localhost:8086`
-- Grafana unter `localhost:3000`

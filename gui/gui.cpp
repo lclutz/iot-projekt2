@@ -10,8 +10,6 @@
 #include "defer.h"
 #include "helpers.h"
 
-#include <date/date.h>
-
 // Library for talking to InfluxDB
 #include <InfluxDBFactory.h>
 
@@ -29,9 +27,6 @@
 
 // Library for plotting graphs
 #include <implot.h>
-
-using TimeStamp = std::chrono::time_point<std::chrono::system_clock>;
-using DataBase = std::unique_ptr<influxdb::InfluxDB>;
 
 // Helper for defining ImGui colors as hex RGBA
 constexpr ImVec4 RGBA(uint32_t const rgba)
@@ -51,8 +46,8 @@ static constexpr auto HumidityColor{RGBA(0x55A868FF)};
 
 struct Measurement
 {
-    TimeStamp timeStamp;
-    float value;
+    std::chrono::system_clock::time_point timeStamp;
+    double value;
 };
 
 struct TimeSeries
@@ -62,7 +57,7 @@ struct TimeSeries
 
     void Insert(Measurement const &measurement)
     {
-        values.emplace_back(static_cast<double>(measurement.value));
+        values.emplace_back(measurement.value);
         auto const seconds = TimePointToSeconds(measurement.timeStamp);
         timeStamps.emplace_back(seconds);
         LogI("Seconds: %f", seconds);
@@ -162,7 +157,7 @@ static std::vector<Measurement> GetNewMeasurements(
         {
             auto measurement = Measurement{};
             measurement.timeStamp = point.getTimestamp();
-            measurement.value = std::stof(point.getFields().substr(6));
+            measurement.value = std::stod(point.getFields().substr(6));
             newMeasurements.emplace_back(measurement);
         }
     }
