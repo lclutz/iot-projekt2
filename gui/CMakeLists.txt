@@ -7,7 +7,10 @@ set(SOURCES
 )
 
 set(HEADERS
-  helpers.h
+  db.h
+  db_reader.h
+  gol.h
+  logging.h
 )
 
 add_executable(${PROJECT_NAME} WIN32 ${SOURCES} ${HEADERS})

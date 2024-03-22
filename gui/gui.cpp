@@ -1,32 +1,56 @@
-#include <chrono>
+#include <cmath>
 #include <future>
-#include <memory>
-#include <mutex>
-#include <sstream>
 #include <string>
-#include <vector>
 
 #include "constants.h"
+#include "db.h"
+#include "db_reader.h"
 #include "defer.h"
-#include "helpers.h"
+#include "gol.h"
+#include "logging.h"
 
-// Library for talking to InfluxDB
-#include <InfluxDBFactory.h>
-
-// Library to abstract window creation on different platforms
 #include <SDL.h>
 #if !SDL_VERSION_ATLEAST(2, 0, 17)
 #error This backend requires SDL 2.0.17+ because of SDL_RenderGeometry() function
 #endif
 
-// Library for immediate mode GUI creation
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
 #include <imgui_impl_sdlrenderer2.h>
 #include <imgui_stdlib.h>
 
-// Library for plotting graphs
 #include <implot.h>
+
+static auto const Title = std::string{"Visualisierung"};
+static auto const ConnectTitle = std::string{"Connect"};
+static constexpr int Width = 800;
+static constexpr int Height = 600;
+
+enum class Application
+{
+    VISUALISIERUNG,
+    EASTER_EGG,
+};
+
+struct State
+{
+    Application app = Application::VISUALISIERUNG;
+    bool fitToData = true;
+    bool showConnDialog = true;
+
+    std::string influxDbUrl{"http://localhost:8086?db=" + InfluxDbName};
+    Db db;
+
+    TimeSeries temperatures;
+    DbReader temperatureReader{"temperature"};
+    std::future<TimeSeries> temperatureFuture;
+
+    TimeSeries humidities;
+    DbReader humidityReader{"humidity"};
+    std::future<TimeSeries> humidityFuture;
+
+    gol::Gol gol;
+};
 
 // Helper for defining ImGui colors as hex RGBA
 constexpr ImVec4 RGBA(uint32_t const rgba)
@@ -37,132 +61,31 @@ constexpr ImVec4 RGBA(uint32_t const rgba)
             ((rgba >> (8 * 0)) & 0xFF) / 255.0f};
 }
 
-static auto const Title = std::string{"Visualisierung"};
-static auto const ConnectTitle = std::string{"Connect"};
-static constexpr int Width = 800;
-static constexpr int Height = 600;
 static constexpr auto TemperatureColor{RGBA(0xC44E52FF)};
 static constexpr auto HumidityColor{RGBA(0x55A868FF)};
 
-struct Measurement
+// Wrapper for SDL functions returning error codes. Will log errors and crash
+// the program in case of an error.
+int SDL(int errorCode)
 {
-    std::chrono::system_clock::time_point timeStamp;
-    double value;
-};
+    if (0 > errorCode)
+    {
+        LogE("SDL Error: %s", SDL_GetError());
+        exit(1);
+    }
+    return errorCode;
+}
 
-struct TimeSeries
+// Wrapper for SDL functions returning pointers to SDL data types. Will log
+// errors and crash the program in case of an error.
+template <typename T> T *SDL(T *const ptr)
 {
-    std::vector<double> values;
-    std::vector<double> timeStamps;
-
-    void Insert(Measurement const &measurement)
+    if (nullptr == ptr)
     {
-        values.emplace_back(measurement.value);
-        auto const seconds = TimePointToSeconds(measurement.timeStamp);
-        timeStamps.emplace_back(seconds);
-        LogI("Seconds: %f", seconds);
+        LogE("SDL Error: %s", SDL_GetError());
+        exit(1);
     }
-
-    void Insert(std::vector<Measurement> const &measurements)
-    {
-        for (auto const &measurement : measurements)
-        {
-            Insert(measurement);
-        }
-    }
-};
-
-// Wrapper for thread safe queries to InfluxDB
-class Db
-{
-  public:
-    ~Db()
-    {
-        // Grab a lock to make sure the Db object is not in use by another
-        // thread when destructing
-        auto const lg = std::lock_guard{m};
-    }
-
-    bool Connect(std::string const &url, std::string &errMsg) noexcept
-    {
-        auto const lg = std::lock_guard{m};
-        try
-        {
-            db = influxdb::InfluxDBFactory::Get(url);
-            db->createDatabaseIfNotExists();
-            return true;
-        }
-        catch (influxdb::InfluxDBException const &e)
-        {
-            errMsg = e.what();
-            return false;
-        }
-    }
-
-    bool Query(std::string const &q, std::vector<influxdb::Point> &result,
-               std::string &errMsg) noexcept
-    {
-        auto const lg = std::lock_guard{m};
-        try
-        {
-            result = db->query(q);
-            return true;
-        }
-        catch (influxdb::InfluxDBException const &e)
-        {
-            errMsg = e.what();
-            return false;
-        }
-    }
-
-  private:
-    std::mutex m;
-    std::shared_ptr<influxdb::InfluxDB> db;
-};
-
-struct State
-{
-    TimeSeries temperatureSeries;
-    std::future<std::vector<Measurement>> temperatureFuture;
-    std::chrono::system_clock::time_point temperatureCursor = std::chrono::system_clock::now();
-
-    TimeSeries humiditySeries;
-    std::future<std::vector<Measurement>> humidityFuture;
-    std::chrono::system_clock::time_point humidityCursor = std::chrono::system_clock::now();
-
-    Db db;
-    bool showConnDialog = true;
-    std::string influxDbUrl{"http://localhost:8086?db=" + InfluxDbName};
-
-    bool fitToData = true;
-};
-
-static std::vector<Measurement> GetNewMeasurements(
-    Db &db, std::string const &name, std::chrono::system_clock::time_point const &since)
-{
-    auto newMeasurements = std::vector<Measurement>{};
-
-    auto stream = std::stringstream{};
-    stream
-        << "select * from " << name << " where time > "
-        << std::chrono::duration_cast<std::chrono::nanoseconds>(since.time_since_epoch()).count();
-    auto const query = stream.str();
-    LogI("query: %s", query.c_str());
-    auto errMsg = std::string{};
-    auto points = std::vector<influxdb::Point>{};
-
-    if (db.Query(query, points, errMsg))
-    {
-        for (auto point : points)
-        {
-            auto measurement = Measurement{};
-            measurement.timeStamp = point.getTimestamp();
-            measurement.value = std::stod(point.getFields().substr(6));
-            newMeasurements.emplace_back(measurement);
-        }
-    }
-
-    return newMeasurements;
+    return ptr;
 }
 
 // Draw modal user dialog for connecting to the InfluxDB instance
@@ -185,12 +108,10 @@ static void DrawConnectDialog(State &state)
             {
                 errorMsg.clear();
 
-                state.temperatureFuture =
-                    std::async(std::launch::async, GetNewMeasurements, std::ref(state.db),
-                               "temperature", std::ref(state.temperatureCursor));
-                state.humidityFuture =
-                    std::async(std::launch::async, GetNewMeasurements, std::ref(state.db),
-                               "humidity", std::ref(state.humidityCursor));
+                state.temperatureFuture = std::async(
+                    std::launch::async, std::ref(state.temperatureReader), std::ref(state.db));
+                state.humidityFuture = std::async(
+                    std::launch::async, std::ref(state.humidityReader), std::ref(state.db));
 
                 state.showConnDialog = false;
                 ImGui::CloseCurrentPopup();
@@ -275,29 +196,18 @@ static void UpdateData(State &state)
 {
     if (IsFutureDone(state.temperatureFuture))
     {
-        auto const measurements = state.temperatureFuture.get();
-        if (!measurements.empty())
-        {
-            LogI("%lld new measurements", measurements.size());
-            state.temperatureSeries.Insert(measurements);
-            state.temperatureCursor = measurements.back().timeStamp;
-        }
+        auto const temperatures = state.temperatureFuture.get();
+        state.temperatures.Append(temperatures);
         state.temperatureFuture =
-            std::async(std::launch::async, GetNewMeasurements, std::ref(state.db), "temperature",
-                       std::ref(state.temperatureCursor));
+            std::async(std::launch::async, std::ref(state.temperatureReader), std::ref(state.db));
     }
 
     if (IsFutureDone(state.humidityFuture))
     {
-        auto const measurements = state.humidityFuture.get();
-        if (!measurements.empty())
-        {
-            state.humiditySeries.Insert(measurements);
-            state.humidityCursor = measurements.back().timeStamp;
-        }
+        auto const humidities = state.humidityFuture.get();
+        state.humidities.Append(humidities);
         state.humidityFuture =
-            std::async(std::launch::async, GetNewMeasurements, std::ref(state.db), "humidity",
-                       std::ref(state.humidityCursor));
+            std::async(std::launch::async, std::ref(state.humidityReader), std::ref(state.db));
     }
 }
 
@@ -321,19 +231,63 @@ static void RenderFrame(State &state)
             {
                 ImPlot::SetNextAxesToFit();
             }
-            DrawTimeSeries("Temperature", "Temperature in °C", state.temperatureSeries,
+            DrawTimeSeries("Temperature", "Temperature in °C", state.temperatures,
                            TemperatureColor);
 
             if (state.fitToData)
             {
                 ImPlot::SetNextAxesToFit();
             }
-            DrawTimeSeries("Humidity", "Humidity in %", state.humiditySeries, HumidityColor);
+            DrawTimeSeries("Humidity", "Humidity in %", state.humidities, HumidityColor);
 
             ImPlot::EndSubplots();
         }
 
         ImGui::End();
+    }
+}
+
+static void RenderGol(SDL_Renderer *const renderer, gol::Gol &gol, float const windowWidth,
+                      float const windowHeight)
+{
+    auto const cellHeight = windowHeight / gol::Height;
+    auto const cellWidth = windowWidth / gol::Width;
+
+    SDL_SetRenderDrawColor(renderer, 0x56, 0x52, 0x6e, 0xff);
+    for (size_t y = 1; y <= gol::Height; ++y)
+    {
+        auto const x1 = 0;
+        auto const y1 = static_cast<int>(std::round(0.0f + y * cellHeight));
+        auto const x2 = static_cast<int>(std::round(windowWidth));
+        auto const y2 = y1;
+        SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
+    }
+
+    for (size_t x = 1; x <= gol::Width; ++x)
+    {
+        auto const x1 = static_cast<int>(std::round(0.0f + x * cellWidth));
+        auto const y1 = 0;
+        auto const x2 = x1;
+        auto const y2 = static_cast<int>(std::round(windowHeight));
+        SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
+    }
+
+    SDL_SetRenderDrawColor(renderer, 0xea, 0x9a, 0x97, 0xff);
+    const auto cells = gol.GetCells();
+    for (size_t y = 0; y < gol::Height; ++y)
+    {
+        for (size_t x = 0; x < gol::Width; ++x)
+        {
+            if (cells.at(y * gol::Width + x))
+            {
+                SDL_Rect rect;
+                rect.x = static_cast<int>(std::round(x * cellWidth));
+                rect.y = static_cast<int>(std::round(y * cellHeight));
+                rect.w = static_cast<int>(std::ceil(cellWidth));
+                rect.h = static_cast<int>(std::ceil(cellHeight));
+                SDL_RenderFillRect(renderer, &rect);
+            }
+        }
     }
 }
 
@@ -389,27 +343,74 @@ int main(int, char **)
                 shouldQuit = true;
             }
 
+            if (event.type == SDL_KEYDOWN)
+            {
+                if (SDLK_ESCAPE == event.key.keysym.sym)
+                {
+                    switch (state.app)
+                    {
+                    case Application::VISUALISIERUNG: {
+                        state.app = Application::EASTER_EGG;
+
+                        state.gol.Clear();
+                        state.gol.Set(5, 11, true);
+                        state.gol.Set(6, 12, true);
+                        state.gol.Set(6, 13, true);
+                        state.gol.Set(5, 13, true);
+                        state.gol.Set(4, 13, true);
+                    }
+                    break;
+                    case Application::EASTER_EGG: {
+                        state.app = Application::VISUALISIERUNG;
+                    }
+                    break;
+                    }
+                }
+            }
+
             if (event.type == SDL_WINDOWEVENT_RESIZED || event.type == SDL_WINDOWEVENT_SIZE_CHANGED)
             {
                 auto width = int{0};
                 auto height = int{0};
                 SDL_GetWindowSize(window, &width, &height);
-
-                auto const size = ImVec2{static_cast<float>(width), static_cast<float>(height)};
-                ImGui::SetWindowSize(size);
+                ImGui::SetWindowSize({static_cast<float>(width), static_cast<float>(height)});
             }
         }
         ImGui_ImplSDLRenderer2_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
-        UpdateData(state);
-        RenderFrame(state);
+
+        if (Application::VISUALISIERUNG == state.app)
+        {
+            UpdateData(state);
+            RenderFrame(state);
+        }
+
         ImGui::Render();
         SDL(SDL_RenderSetScale(renderer, io.DisplayFramebufferScale.x,
                                io.DisplayFramebufferScale.y));
         SDL(SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0x00));
         SDL(SDL_RenderClear(renderer));
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData());
+
+        if (Application::EASTER_EGG == state.app)
+        {
+
+            using namespace std::chrono;
+            static auto lastUpdate = system_clock::now();
+
+            if (system_clock::now() - lastUpdate >= system_clock::duration{milliseconds{100}})
+            {
+                lastUpdate = system_clock::now();
+                state.gol.Update();
+            }
+
+            auto width = int{0};
+            auto height = int{0};
+            SDL_GetWindowSize(window, &width, &height);
+            RenderGol(renderer, state.gol, static_cast<float>(width), static_cast<float>(height));
+        }
+
         SDL_RenderPresent(renderer);
     }
 
