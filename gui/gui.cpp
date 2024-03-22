@@ -9,7 +9,6 @@
 #include "constants.h"
 #include "defer.h"
 #include "helpers.h"
-#include "result.h"
 
 #include <date/date.h>
 
@@ -58,15 +57,15 @@ struct Measurement
 
 struct TimeSeries
 {
-    std::vector<float> values;
-    std::vector<float> timeStamps;
+    std::vector<double> values;
+    std::vector<double> timeStamps;
 
     void Insert(Measurement const &measurement)
     {
-        values.emplace_back(measurement.value);
+        values.emplace_back(static_cast<double>(measurement.value));
         auto const seconds = TimePointToSeconds(measurement.timeStamp);
-        LogI("Seconds: %f", seconds);
         timeStamps.emplace_back(seconds);
+        LogI("Seconds: %f", seconds);
     }
 
     void Insert(std::vector<Measurement> const &measurements)
@@ -82,19 +81,43 @@ struct TimeSeries
 class Db
 {
   public:
-    explicit Db() = default;
-    ~Db() = default;
-
-    Db(std::string const &url, std::string const &dbName)
+    ~Db()
     {
-        db = influxdb::InfluxDBFactory::Get(url + "?db=" + dbName);
-        db->createDatabaseIfNotExists();
+        // Grab a lock to make sure the Db object is not in use by another
+        // thread when destructing
+        auto const lg = std::lock_guard{m};
     }
 
-    std::vector<influxdb::Point> query(std::string const &q)
+    bool Connect(std::string const &url, std::string &errMsg) noexcept
     {
         auto const lg = std::lock_guard{m};
-        return db->query(q);
+        try
+        {
+            db = influxdb::InfluxDBFactory::Get(url);
+            db->createDatabaseIfNotExists();
+            return true;
+        }
+        catch (influxdb::InfluxDBException const &e)
+        {
+            errMsg = e.what();
+            return false;
+        }
+    }
+
+    bool Query(std::string const &q, std::vector<influxdb::Point> &result,
+               std::string &errMsg) noexcept
+    {
+        auto const lg = std::lock_guard{m};
+        try
+        {
+            result = db->query(q);
+            return true;
+        }
+        catch (influxdb::InfluxDBException const &e)
+        {
+            errMsg = e.what();
+            return false;
+        }
     }
 
   private:
@@ -105,64 +128,46 @@ class Db
 struct State
 {
     TimeSeries temperatureSeries;
-    std::future<Result<std::vector<Measurement>>> temperatureFuture;
+    std::future<std::vector<Measurement>> temperatureFuture;
     std::chrono::system_clock::time_point temperatureCursor = std::chrono::system_clock::now();
 
     TimeSeries humiditySeries;
-    std::future<Result<std::vector<Measurement>>> humidityFuture;
+    std::future<std::vector<Measurement>> humidityFuture;
     std::chrono::system_clock::time_point humidityCursor = std::chrono::system_clock::now();
 
     Db db;
     bool showConnDialog = true;
-    std::string influxDbUrl{"http://localhost:8086"};
+    std::string influxDbUrl{"http://localhost:8086?db=" + InfluxDbName};
 
     bool fitToData = true;
 };
 
-static Result<std::vector<Measurement>> GetNewMeasurements(
+static std::vector<Measurement> GetNewMeasurements(
     Db &db, std::string const &name, std::chrono::system_clock::time_point const &since)
 {
-    try
+    auto newMeasurements = std::vector<Measurement>{};
+
+    auto stream = std::stringstream{};
+    stream
+        << "select * from " << name << " where time > "
+        << std::chrono::duration_cast<std::chrono::nanoseconds>(since.time_since_epoch()).count();
+    auto const query = stream.str();
+    LogI("query: %s", query.c_str());
+    auto errMsg = std::string{};
+    auto points = std::vector<influxdb::Point>{};
+
+    if (db.Query(query, points, errMsg))
     {
-        auto newMeasurements = std::vector<Measurement>{};
-
-        using namespace std::chrono;
-        auto stream = std::stringstream{};
-        stream << "select * from " << name << " where time > "
-               << duration_cast<nanoseconds>(since.time_since_epoch()).count();
-
-        auto const query = stream.str();
-
-        for (auto point : db.query(query))
+        for (auto point : points)
         {
             auto measurement = Measurement{};
             measurement.timeStamp = point.getTimestamp();
-            LogI("getTimestamp(): %f", TimePointToSeconds(measurement.timeStamp));
             measurement.value = std::stof(point.getFields().substr(6));
             newMeasurements.emplace_back(measurement);
         }
+    }
 
-        return newMeasurements;
-    }
-    catch (influxdb::InfluxDBException const &e)
-    {
-        return Err{e.what()};
-    }
-}
-
-// Connect to database or return an error message
-// Stupid std::variant is forcing me to use a raw pointer here...
-static Result<Db> Connect(std::string const &url)
-{
-    try
-    {
-        auto const db = Db(url, InfluxDbName);
-        return db;
-    }
-    catch (influxdb::InfluxDBException const &e)
-    {
-        return Err{e.what()};
-    }
+    return newMeasurements;
 }
 
 // Draw modal user dialog for connecting to the InfluxDB instance
@@ -181,27 +186,24 @@ static void DrawConnectDialog(State &state)
         if (ImGui::Button("Connect"))
         {
             LogI("Trying to connect to '%s'", state.influxDbUrl.c_str());
-            auto const connectResult = Connect(state.influxDbUrl);
-            if (std::holds_alternative<Err>(connectResult))
-            {
-                errorMsg = std::get<Err>(connectResult);
-                LogE("Failed to connect to %s: %s", state.influxDbUrl.c_str(), errorMsg.c_str());
-            }
-            else
+            if (state.db.Connect(state.influxDbUrl, errorMsg))
             {
                 errorMsg.clear();
-                state.db = std::get<Db>(connectResult);
 
                 state.temperatureFuture =
-                    std::async(std::launch::async, GetNewMeasurements, "temperature",
-                               std::ref(state.db), std::ref(state.temperatureCursor));
+                    std::async(std::launch::async, GetNewMeasurements, std::ref(state.db),
+                               "temperature", std::ref(state.temperatureCursor));
                 state.humidityFuture =
-                    std::async(std::launch::async, GetNewMeasurements, "humidity",
-                               std::ref(state.db), std::ref(state.humidityCursor));
+                    std::async(std::launch::async, GetNewMeasurements, std::ref(state.db),
+                               "humidity", std::ref(state.humidityCursor));
 
                 state.showConnDialog = false;
                 ImGui::CloseCurrentPopup();
                 LogI("Connected");
+            }
+            else
+            {
+                LogE("Failed to connect to %s: %s", state.influxDbUrl.c_str(), errorMsg.c_str());
             }
         }
 
@@ -278,44 +280,29 @@ static void UpdateData(State &state)
 {
     if (IsFutureDone(state.temperatureFuture))
     {
-        auto const result = state.temperatureFuture.get();
-        if (std::holds_alternative<std::vector<Measurement>>(result))
+        auto const measurements = state.temperatureFuture.get();
+        if (!measurements.empty())
         {
-            auto const measurements = std::get<std::vector<Measurement>>(result);
-            if (!measurements.empty())
-            {
-                state.temperatureSeries.Insert(measurements);
-                state.temperatureCursor = measurements.back().timeStamp;
-            }
-            state.temperatureFuture =
-                std::async(std::launch::async, GetNewMeasurements, std::ref(state.db),
-                           "temperature", std::ref(state.temperatureCursor));
+            LogI("%lld new measurements", measurements.size());
+            state.temperatureSeries.Insert(measurements);
+            state.temperatureCursor = measurements.back().timeStamp;
         }
-        else
-        {
-            LogE("Failed to update temperature data: %s", std::get<Err>(result).c_str());
-        }
+        state.temperatureFuture =
+            std::async(std::launch::async, GetNewMeasurements, std::ref(state.db), "temperature",
+                       std::ref(state.temperatureCursor));
     }
 
     if (IsFutureDone(state.humidityFuture))
     {
-        auto const result = state.humidityFuture.get();
-        if (std::holds_alternative<std::vector<Measurement>>(result))
+        auto const measurements = state.humidityFuture.get();
+        if (!measurements.empty())
         {
-            auto const measurements = std::get<std::vector<Measurement>>(result);
-            if (!measurements.empty())
-            {
-                state.humiditySeries.Insert(measurements);
-                state.humidityCursor = measurements.back().timeStamp;
-            }
-            state.humidityFuture =
-                std::async(std::launch::async, GetNewMeasurements, std::ref(state.db), "humidity",
-                           std::ref(state.humidityCursor));
+            state.humiditySeries.Insert(measurements);
+            state.humidityCursor = measurements.back().timeStamp;
         }
-        else
-        {
-            LogE("Failed to update humidity data: %s", std::get<Err>(result).c_str());
-        }
+        state.humidityFuture =
+            std::async(std::launch::async, GetNewMeasurements, std::ref(state.db), "humidity",
+                       std::ref(state.humidityCursor));
     }
 }
 

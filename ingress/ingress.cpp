@@ -2,7 +2,6 @@
 #include <string>
 
 #include "constants.h"
-#include "result.h"
 
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -20,8 +19,8 @@ static void Usage(std::string const &executable)
 {
     std::cerr << "Usage:\n\n"               //
               << executable << ": "         //
-              << "--influx <InfluxDB URL> " //
-              << "--mqtt <MQTT Broker URL>" //
+              << "--influx localhost:8086 " //
+              << "--mqtt localhost:1883"    //
               << "\n"                       //
               << std::endl;
 }
@@ -61,7 +60,9 @@ static Config ParseConfig(int const argc, char *argv[])
 
         if ("--influx"s == arg && i + 1 < argc)
         {
-            config.influxDbUrl = argv[++i];
+            auto stream = std::stringstream{};
+            stream << "http://" << argv[++i] << "?db=" << InfluxDbName;
+            config.influxDbUrl = stream.str();
         }
 
         if ("--mqtt"s == arg && i + 1 < argc)
@@ -97,27 +98,40 @@ struct Measurement
     }
 };
 
+using Temperature = Measurement;
+using Humidity = Measurement;
+
 // Parse out the temperature and humidity measurements from an MQTT message payload
-static Result<std::pair<Measurement, Measurement>> ParseMqttPayload(std::string const &payload)
+static bool ParseMqttPayload(std::string const &payload, Temperature &temperature,
+                             Humidity &humidity, std::string &errMsg) noexcept
 {
-    auto ptree = boost::property_tree::ptree{};
     try
     {
+        auto ptree = boost::property_tree::ptree{};
         auto stream = std::stringstream{payload};
         boost::property_tree::read_json(stream, ptree);
+
         auto timestamp = std::chrono::system_clock::time_point{};
-        std::istringstream{ptree.get<std::string>("timestamp")} >> date::parse(TimeStampFormat, timestamp);
-        auto const temperature = ptree.get<float>("temperature");
-        auto const humidity = ptree.get<float>("humidity");
-        return std::pair{Measurement{timestamp, temperature}, Measurement{timestamp, humidity}};
+        std::istringstream{ptree.get<std::string>("timestamp")} >>
+            date::parse(TimeStampFormat, timestamp);
+
+        temperature.timestamp = timestamp;
+        humidity.timestamp = timestamp;
+
+        temperature.value = ptree.get<float>("temperature");
+        humidity.value = ptree.get<float>("humidity");
+
+        return true;
     }
     catch (boost::property_tree::json_parser_error const &e)
     {
-        return Err{e.what()};
+        errMsg = e.what();
+        return false;
     }
     catch (boost::property_tree::ptree_error const &e)
     {
-        return Err{e.what()};
+        errMsg = e.what();
+        return false;
     }
 }
 
@@ -133,27 +147,21 @@ int main(int argc, char *argv[])
 
     std::cout << "Config: " << config << std::endl;
 
-    auto client = mqtt::client{config.mqttUrl, config.clientId, mqtt::create_options{MqttVersion}};
-
-    auto const connOpts = mqtt::connect_options_builder()
-                              .mqtt_version(MqttVersion)
-                              .automatic_reconnect(std::chrono::seconds{2}, std::chrono::seconds{30})
-                              .clean_session(false)
-                              .finalize();
-
-    auto db = influxdb::InfluxDBFactory::Get(config.influxDbUrl);
     try
     {
+        auto client =
+            mqtt::client{config.mqttUrl, config.mqttUrl, mqtt::create_options{MqttVersion}};
+
+        auto const connOpts =
+            mqtt::connect_options_builder()
+                .mqtt_version(MqttVersion)
+                .automatic_reconnect(std::chrono::seconds{2}, std::chrono::seconds{30})
+                .clean_session(false)
+                .finalize();
+
+        auto db = influxdb::InfluxDBFactory::Get(config.influxDbUrl);
         db->createDatabaseIfNotExists();
-    }
-    catch (influxdb::InfluxDBException const &e)
-    {
-        std::cerr << "Failed to connect to InfluxDB: " << e.what() << std::endl;
-        return 1;
-    }
 
-    try
-    {
         std::cout << "Connecting to MQTT server..." << std::endl;
         auto const res = client.connect(connOpts);
         std::cout << "Connected." << std::endl;
@@ -163,46 +171,54 @@ int main(int argc, char *argv[])
             std::cout << "Subscribing to topic..." << std::endl;
             client.subscribe(config.topic, config.qos);
             std::cout << "Subscribed." << std::endl;
-
-            std::cout << "Waiting on messages in " << config.topic << "..." << std::endl;
-            while (true)
-            {
-                auto const msg = client.consume_message();
-                if (nullptr != msg)
-                {
-                    auto const payload = msg->get_payload();
-                    std::cout << "Message received: " << payload << std::endl;
-
-                    auto const parseResult = ParseMqttPayload(payload);
-                    if (std::holds_alternative<std::pair<Measurement, Measurement>>(parseResult))
-                    {
-                        auto const &[temp, humi] = std::get<std::pair<Measurement, Measurement>>(parseResult);
-                        std::cout << "Temperature: " << temp << std::endl;
-                        std::cout << "Humidity: " << humi << std::endl;
-
-                        auto tempPoint =
-                            influxdb::Point{"temperature"}.setTimestamp(temp.timestamp).addField("value", temp.value);
-                        db->write(std::move(tempPoint));
-
-                        auto humiPoint =
-                            influxdb::Point{"humidity"}.setTimestamp(humi.timestamp).addField("value", humi.value);
-                        db->write(std::move(humiPoint));
-                    }
-                    else
-                    {
-                        std::cerr << "Error parsing: " << std::get<Err>(parseResult) << std::endl;
-                    }
-                }
-            }
         }
         else
         {
             std::cout << "Session already present. Skipping subscribe." << std::endl;
         }
+
+        std::cout << "Waiting on messages in " << config.topic << "..." << std::endl;
+        while (true)
+        {
+            auto const msg = client.consume_message();
+            if (nullptr != msg)
+            {
+                auto const payload = msg->get_payload();
+                std::cout << "Message received: " << payload << std::endl;
+
+                auto temperature = Temperature{};
+                auto humidity = Temperature{};
+                auto errMsg = std::string{};
+                if (ParseMqttPayload(payload, temperature, humidity, errMsg))
+                {
+                    std::cout << "Temperature: " << temperature << std::endl;
+                    std::cout << "Humidity: " << humidity << std::endl;
+
+                    auto tempPoint = influxdb::Point{"temperature"}
+                                         .setTimestamp(temperature.timestamp)
+                                         .addField("value", temperature.value);
+                    db->write(std::move(tempPoint));
+
+                    auto humiPoint = influxdb::Point{"humidity"}
+                                         .setTimestamp(humidity.timestamp)
+                                         .addField("value", humidity.value);
+                    db->write(std::move(humiPoint));
+                }
+                else
+                {
+                    std::cerr << "Error parsing: " << errMsg << std::endl;
+                }
+            }
+        }
     }
     catch (mqtt::exception const &e)
     {
-        std::cerr << "MQTT error: " << e.what();
+        std::cerr << "MQTT error: " << e.what() << std::endl;
+        return 1;
+    }
+    catch (influxdb::InfluxDBException const &e)
+    {
+        std::cerr << "InfluxDB error: " << e.what() << std::endl;
         return 1;
     }
 

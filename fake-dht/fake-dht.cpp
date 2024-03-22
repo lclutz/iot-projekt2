@@ -16,10 +16,10 @@ static auto const ClientId = std::string{"fake-dht"};
 // Prints usage string
 static void Usage(std::string const &executable)
 {
-    std::cerr << "Usage:\n\n"               //
-              << executable << ": "         //
-              << "--mqtt <MQTT Broker URL>" //
-              << "\n"                       //
+    std::cerr << "Usage:\n\n"            //
+              << executable << ": "      //
+              << "--mqtt localhost:1883" //
+              << "\n"                    //
               << std::endl;
 }
 
@@ -223,16 +223,18 @@ int main(int argc, char **argv)
 
     std::cout << "Initializing..." << std::endl;
     auto persist = MemoryPersistence{};
-    auto client = mqtt::client{config.mqttUrl, config.clientId, mqtt::create_options{MqttVersion}, &persist};
+    auto client =
+        mqtt::client{config.mqttUrl, config.clientId, mqtt::create_options{MqttVersion}, &persist};
 
     auto userCallback = UserCallback{};
     client.set_callback(userCallback);
 
-    auto const connOpts = mqtt::connect_options_builder()
-                              .mqtt_version(MqttVersion)
-                              .automatic_reconnect(std::chrono::seconds{2}, std::chrono::seconds{30})
-                              .clean_session(false)
-                              .finalize();
+    auto const connOpts =
+        mqtt::connect_options_builder()
+            .mqtt_version(MqttVersion)
+            .automatic_reconnect(std::chrono::seconds{2}, std::chrono::seconds{30})
+            .clean_session(false)
+            .finalize();
 
     std::cout << "Initialized." << std::endl;
 

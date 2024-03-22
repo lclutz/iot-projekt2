@@ -5,13 +5,7 @@
 
 #include <SDL.h>
 
-// Helper for turning a time_point into a float representing the number of
-// seconds since epoch
-template <typename T> static float TimePointToSeconds(std::chrono::time_point<T> const &tp)
-{
-    auto const ms = std::chrono::duration_cast<std::chrono::milliseconds>(tp - std::chrono::system_clock::time_point{});
-    return ms.count() / 1000.0f;
-}
+#include <date/date.h>
 
 // Helper for logging errors
 template <typename... Params> static void LogE(const char *const fmt, Params &&...params)
@@ -56,7 +50,17 @@ template <typename T> T *SDL(T *const ptr)
 }
 
 // Helper for checking state of future
-template <typename T> bool IsFutureDone(std::future<T> const& future)
+template <typename T> bool IsFutureDone(std::future<T> const &future)
 {
     return future.valid() && future.wait_for(std::chrono::seconds{0}) == std::future_status::ready;
+}
+
+// Helper for turning a time_point into a float representing the number of
+// seconds since epoch
+template <typename T> static double TimePointToSeconds(std::chrono::time_point<T> const &tp)
+{
+    using namespace std::chrono;
+    auto const ms = duration_cast<milliseconds>(tp.time_since_epoch()).count();
+    auto const seconds = ms / 1000.0;
+    return seconds;
 }
